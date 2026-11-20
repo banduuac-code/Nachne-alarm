@@ -1,0 +1,276 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Create Android project
+        run: |
+          set -e
+          HTML=$(ls *.html | head -1)
+          echo "Using $HTML"
+          mkdir -p app/src/main/assets app/src/main/java/np/naachne/alarm app/src/main/res/values app/src/main/res/drawable
+          cp "$HTML" app/src/main/assets/index.html
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "NaachneAlarm"
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'np.naachne.alarm'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'np.naachne.alarm'
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          dependencies {
+              implementation 'androidx.webkit:webkit:1.11.0'
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-feature android:name="android.hardware.camera" android:required="false" />
+              <uses-feature android:name="android.hardware.microphone" android:required="false" />
+              <application
+                  android:label="@string/app_name"
+                  android:icon="@drawable/ic_launcher"
+                  android:allowBackup="false"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">नाच्ने अलार्म</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/drawable/ic_launcher.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#C8102E" android:pathData="M0,0h108v108h-108z" />
+              <path android:fillColor="#FFF0B0" android:pathData="M54,54m-30,0a30,30 0 1,1 60,0a30,30 0 1,1 -60,0" />
+              <path android:fillColor="#C8102E" android:pathData="M51,34h6v22h14v6h-20z" />
+          </vector>
+          EOF
+
+          cat > app/src/main/java/np/naachne/alarm/MainActivity.java <<'EOF'
+          package np.naachne.alarm;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.view.WindowManager;
+          import android.webkit.PermissionRequest;
+          import android.webkit.ValueCallback;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          import androidx.webkit.WebViewAssetLoader;
+
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public class MainActivity extends Activity {
+              private static final int REQ_PERM = 1;
+              private static final int REQ_FILE = 2;
+              private WebView web;
+              private PermissionRequest pending;
+              private ValueCallback<Uri[]> fileCb;
+
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                  if (Build.VERSION.SDK_INT >= 27) {
+                      setShowWhenLocked(true);
+                      setTurnScreenOn(true);
+                  }
+
+                  final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
+                          .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                          .build();
+
+                  web = new WebView(this);
+                  setContentView(web);
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setMediaPlaybackRequiresUserGesture(false);
+                  s.setAllowFileAccess(false);
+
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+                          return loader.shouldInterceptRequest(r.getUrl());
+                      }
+                  });
+
+                  web.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onPermissionRequest(final PermissionRequest request) {
+                          runOnUiThread(new Runnable() {
+                              @Override
+                              public void run() {
+                                  List<String> need = new ArrayList<String>();
+                                  for (String r : request.getResources()) {
+                                      if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)
+                                              && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                                          need.add(Manifest.permission.CAMERA);
+                                      }
+                                      if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)
+                                              && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                                          need.add(Manifest.permission.RECORD_AUDIO);
+                                      }
+                                  }
+                                  if (need.isEmpty()) {
+                                      request.grant(request.getResources());
+                                  } else {
+                                      pending = request;
+                                      requestPermissions(need.toArray(new String[0]), REQ_PERM);
+                                  }
+                              }
+                          });
+                      }
+
+                      @Override
+                      public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams p) {
+                          if (fileCb != null) fileCb.onReceiveValue(null);
+                          fileCb = cb;
+                          Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                          i.addCategory(Intent.CATEGORY_OPENABLE);
+                          i.setType("audio/*");
+                          startActivityForResult(Intent.createChooser(i, "Song"), REQ_FILE);
+                          return true;
+                      }
+                  });
+
+                  web.loadUrl("https://appassets.androidplatform.net/assets/index.html");
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+                  super.onRequestPermissionsResult(code, perms, results);
+                  if (code != REQ_PERM || pending == null) return;
+                  boolean ok = results.length > 0;
+                  for (int r : results) if (r != PackageManager.PERMISSION_GRANTED) ok = false;
+                  if (ok) pending.grant(pending.getResources()); else pending.deny();
+                  pending = null;
+              }
+
+              @Override
+              protected void onActivityResult(int req, int res, Intent data) {
+                  super.onActivityResult(req, res, data);
+                  if (req == REQ_FILE && fileCb != null) {
+                      Uri[] out = null;
+                      if (res == RESULT_OK && data != null && data.getData() != null) {
+                          out = new Uri[]{data.getData()};
+                      }
+                      fileCb.onReceiveValue(out);
+                      fileCb = null;
+                  }
+              }
+          }
+          EOF
+
+          cat > .gitignore <<'EOF'
+          build/
+          .gradle/
+          EOF
+
+      - name: Build APK
+        run: |
+          gradle assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk naachne-alarm.apk
+
+      - name: Publish APK to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: Naachne Alarm APK ${{ github.run_number }}
+          files: naachne-alarm.apk
